@@ -9,9 +9,9 @@
 #include <sys/select.h>
 
 // ====== CONFIGURACIÓN ======
-#define VALOR_MIN_INICIO   -29675.7f
-#define VALOR_MAX_INICIO    29876.8f
-#define LIMITE_RESETEO      30000.0f
+#define VALOR_MIN_INICIO   -97.5f
+#define VALOR_MAX_INICIO    30.5f
+#define LIMITE_RESETEO      1300.0f
 #define VALOR_RESET_BAR     0.0f
 // =========================
 
@@ -41,7 +41,7 @@ int main() {
     struct termios options;
     signal(SIGINT, cerrar_puerto);
 
-    fd = open("/dev/ttyS0", O_RDWR | O_NOCTTY | O_NDELAY);
+    fd = open("/dev/ttyUSB0", O_RDWR | O_NOCTTY | O_NDELAY);
     if (fd == -1) { perror("No se pudo abrir el puerto serie"); return 1; }
 
     tcgetattr(fd, &options);
