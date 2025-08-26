@@ -37,7 +37,7 @@ void cleanup(int signo) {
     running = 0;
     if (fd > 0) close(fd);
     tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
-    printf("\nPrograma finalizado.\n");
+    printf("Programa finalizado\n");
     exit(0);
 }
 
@@ -140,7 +140,7 @@ int main() {
         }
 
         // Mostrar en consola
-        printf("Enviado: %s", buffer);
+        printf("%s", buffer);
 
         usleep(INTERVAL_US);
     }
