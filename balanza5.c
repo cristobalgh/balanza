@@ -8,104 +8,91 @@
 #include <time.h>
 #include <sys/select.h>
 #include <math.h>
-#include <ctype.h>   // para toupper()
+#include <ctype.h>
 
-// ------------------ Configuración completa ------------------
+#define SERIAL_PORT "/dev/ttyUSB0"
+#define BAUDRATE B9600
+
 typedef struct {
-    // Puerto serie
-    const char *serial_port;
-    int baudrate;
-
-    // Rango de inicio y reset
+    // Rango de valores
     double min_start;
     double max_start;
     double reset_limit;
     double reset_value;
 
-    // Incrementos
-    double increment_min;
-    double increment_max;
+    // Control de incremento
+    int update_interval;   // segundos
+    int step_value;        // paso entero
+    int paused;
 
-    // Intervalo envío (μs)
-    int interval_us;
-
-    // Teclas de control
+    // Formato de salida
+    const char *prefix;
+    const char *suffix;
+    int num_width;         // ancho total fijo
     char pause_key;
     char reset_key;
 
-    // Prefijos, sufijos y formato
-    const char *serial_prefix;
-    const char *serial_suffix;
-    const char *number_format;   // ejemplo: "%7.1f"  → ancho=7, decimales=1
-
     // Mensajes de consola
-    const char *inicio;
-    const char *reset_manual;
-    const char *reset_auto;
-    const char *pausado;
-    const char *reanudar;
-    const char *finalizado;
-    const char *error_puerto;
-    const char *error_escritura;
+    const char *msg_default_values;
+    const char *msg_usage;
+    const char *msg_sending;
+    const char *msg_pause;
+    const char *msg_resume;
+    const char *msg_reset;
+    const char *msg_exit;
+
+    // Códigos de color ANSI
+    const char *color_pause;
+    const char *color_resume;
+    const char *color_reset;
+    const char *color_reset_all;
 } Config;
 
 Config cfg = {
-    // Puerto
-    .serial_port     = "/dev/ttyUSB0",
-    .baudrate        = B9600,
+    .min_start     = -50.3,
+    .max_start     = 543.5,
+    .reset_limit   = 1350.8,
+    .reset_value   = 0.0,
 
-    // Valores iniciales
-    .min_start       = -50.3,
-    .max_start       = 543.5,
-    .reset_limit     = 1350.8,
-    .reset_value     = 0.0,
+    .update_interval = 1,
+    .step_value     = 1,
+    .paused         = 0,
 
-    // Incrementos aleatorios
-    .increment_min   = 0.2,
-    .increment_max   = 1.5,
-
-    // Intervalo (1 segundo)
-    .interval_us     = 1000000,
-
-    // Teclas
-    .pause_key       = 'p',
-    .reset_key       = ' ',
-
-    // Prefijo, sufijo y formato
-    .serial_prefix   = "ST,NT,",
-    .serial_suffix   = "kg",
-    .number_format   = "%7.1f",
+    .prefix        = "ST,NT,",
+    .suffix        = "kg\r\n",
+    .num_width     = 7,
+    .pause_key     = 'p',
+    .reset_key     = ' ',
 
     // Mensajes
-    .inicio          = "Programa iniciado. Pausa/Reanuda con '%c', Reset con espacio.\n",
-    .reset_manual    = " -> RESET aplicado: %.1f kg\n",
-    .reset_auto      = " -> RESET automático: %.1f kg\n",
-    .pausado         = " -> PAUSADO\n",
-    .reanudar        = " -> REANUDADO\n",
-    .finalizado      = "Programa finalizado\n",
-    .error_puerto    = "Error abriendo puerto",
-    .error_escritura = "Error escribiendo al puerto"
+    .msg_default_values = "Usando valores por defecto: intervalo=%ds, paso=%dkg\n",
+    .msg_usage          = "Recuerda: puedes correr el programa así:\nsudo %s <intervalo 1-10s> <paso 1-10kg>\n",
+    .msg_sending        = "Enviando cada %ds, paso %dkg (+ decimal aleatorio ±0.9). Ctrl+C para salir.\n",
+    .msg_pause          = " -> Pausa: %s%s",
+    .msg_resume         = " -> Reanuda: %s%s",
+    .msg_reset          = " -> Reset manual: %s%s",
+    .msg_exit           = "\nPuerto cerrado. Saliendo...\n",
+
+    // Colores ANSI
+    .color_pause    = "\033[33m",   // amarillo
+    .color_resume   = "\033[32m",   // verde
+    .color_reset    = "\033[31m",   // rojo
+    .color_reset_all= "\033[0m"     // reinicia color
 };
 
-// ------------------ Variables globales ------------------
-int fd; 
+int fd;
 int running = 1;
-int paused = 0;
 struct termios orig_termios;
 
-// ------------------ Funciones ------------------
 void cleanup(int signo) {
     running = 0;
     if (fd > 0) close(fd);
     tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
-    printf("%s", cfg.finalizado);
+    printf("%s", cfg.msg_exit);
     exit(0);
 }
 
-void disable_raw_mode() {
-    tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
-}
-
+void disable_raw_mode() { tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios); }
 void enable_raw_mode() {
     tcgetattr(STDIN_FILENO, &orig_termios);
     atexit(disable_raw_mode);
@@ -119,94 +106,107 @@ int kbhit() {
     fd_set fds;
     FD_ZERO(&fds);
     FD_SET(STDIN_FILENO, &fds);
-    return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
+    return select(STDIN_FILENO+1, &fds, NULL, NULL, &tv) > 0;
 }
 
 int setup_serial(const char *device) {
     int fd = open(device, O_RDWR | O_NOCTTY);
-    if (fd == -1) {
-        perror(cfg.error_puerto);
-        exit(1);
-    }
+    if (fd == -1) { perror("No se puede abrir el puerto serie"); exit(1); }
     fcntl(fd, F_SETFL, 0);
-
     struct termios options;
     tcgetattr(fd, &options);
-
-    cfsetispeed(&options, cfg.baudrate);
-    cfsetospeed(&options, cfg.baudrate);
-
+    cfsetispeed(&options, BAUDRATE);
+    cfsetospeed(&options, BAUDRATE);
     options.c_cflag |= (CLOCAL | CREAD);
     options.c_cflag &= ~PARENB;
     options.c_cflag &= ~CSTOPB;
     options.c_cflag &= ~CSIZE;
     options.c_cflag |= CS8;
-
     options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
     options.c_iflag &= ~(IXON | IXOFF | IXANY | ICRNL | INLCR);
     options.c_oflag &= ~OPOST;
-
     tcsetattr(fd, TCSANOW, &options);
     return fd;
 }
 
-double rand_double(double min, double max) {
-    return min + (rand() / (double)RAND_MAX) * (max - min);
+void format_num(double valor, char *out, int width) {
+    double absval = fabs(valor);
+    char numstr[32];
+    snprintf(numstr, sizeof(numstr), "%.1f", absval);
+    int espacios = width - (int)strlen(numstr);
+    if (espacios < 0) espacios = 0;
+    int pos = 0;
+    out[pos++] = (valor >= 0 ? '+' : '-');
+    for (int i=0; i<espacios; i++) out[pos++] = ' ';
+    strcpy(&out[pos], numstr);
 }
 
-// ------------------ Main ------------------
-int main() {
+int main(int argc, char *argv[]) {
+    if (argc == 3) {
+        cfg.update_interval = atoi(argv[1]);
+        cfg.step_value = atoi(argv[2]);
+        if (cfg.update_interval < 1 || cfg.update_interval > 10) {
+            fprintf(stderr, "Error: intervalo debe estar entre 1 y 10 segundos.\n");
+            exit(1);
+        }
+        if (cfg.step_value < 1 || cfg.step_value > 10) {
+            fprintf(stderr, "Error: paso debe ser entero entre 1 y 10 kg.\n");
+            exit(1);
+        }
+    } else {
+        printf(cfg.msg_default_values, cfg.update_interval, cfg.step_value);
+        printf(cfg.msg_usage, argv[0]);
+    }
+
     signal(SIGINT, cleanup);
     srand(time(NULL));
-
     enable_raw_mode();
-    fd = setup_serial(cfg.serial_port);
+    fd = setup_serial(SERIAL_PORT);
 
-    double valor = cfg.min_start + rand_double(0, cfg.max_start - cfg.min_start);
+    double valor = cfg.min_start + (rand() / (double)RAND_MAX) * (cfg.max_start - cfg.min_start);
+    char numbuf[64];
+    char buffer[128];
 
-    printf(cfg.inicio, cfg.pause_key);
+    printf(cfg.msg_sending, cfg.update_interval, cfg.step_value);
 
     while (running) {
-        // --- Leer teclado ---
+        if (!cfg.paused) {
+            double decimal_rand = ((rand() % 19) - 9) / 10.0;
+            valor += cfg.step_value + decimal_rand;
+
+            if (fabs(valor) >= cfg.reset_limit) valor = cfg.reset_value;
+
+            format_num(valor, numbuf, cfg.num_width);
+            snprintf(buffer, sizeof(buffer), "%s%skg\r\n", cfg.prefix, numbuf);
+
+            write(fd, buffer, strlen(buffer));
+            printf("Enviado: %s", buffer);
+        }
+
         if (kbhit()) {
             char c = getchar();
+            format_num(valor, numbuf, cfg.num_width);
+
             if (c == cfg.reset_key) {
                 valor = cfg.reset_value;
-                printf(cfg.reset_manual, valor);
+                printf("%s", cfg.color_reset);
+                printf(cfg.msg_reset, numbuf, cfg.suffix);
+                printf("%s", cfg.color_reset_all);
             } else if (c == cfg.pause_key || c == toupper(cfg.pause_key)) {
-                paused = !paused;
-                printf("%s", paused ? cfg.pausado : cfg.reanudar);
+                cfg.paused = !cfg.paused;
+                if (cfg.paused) {
+                    printf("%s", cfg.color_pause);
+                    printf(cfg.msg_pause, numbuf, cfg.suffix);
+                    printf("%s", cfg.color_reset_all);
+                } else {
+                    printf("%s", cfg.color_resume);
+                    printf(cfg.msg_resume, numbuf, cfg.suffix);
+                    printf("%s", cfg.color_reset_all);
+                }
             }
         }
 
-        if (!paused) {
-            valor += rand_double(cfg.increment_min, cfg.increment_max);
-            if (fabs(valor) >= cfg.reset_limit) {
-                valor = cfg.reset_value;
-                printf(cfg.reset_auto, valor);
-            }
-        }
-
-        // --- Construir número con formato parametrizable ---
-        char numbuf[32];
-        snprintf(numbuf, sizeof(numbuf), cfg.number_format, fabs(valor));
-
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "%s%c%skg\r\n",
-                 cfg.serial_prefix,
-                 (valor >= 0 ? '+' : '-'),
-                 numbuf);
-
-        // Enviar por serial
-        if (write(fd, buffer, strlen(buffer)) < 0) {
-            perror(cfg.error_escritura);
-            break;
-        }
-
-        // Mostrar en consola
-        printf("Enviado: %s", buffer);
-
-        usleep(cfg.interval_us);
+        sleep(cfg.update_interval);
     }
 
     cleanup(0);
