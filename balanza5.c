@@ -11,6 +11,7 @@
 #include <ctype.h>
 
 #define SERIAL_PORT "/dev/ttyUSB0"
+//#define SERIAL_PORT "/dev/ttyACM0"
 #define BAUDRATE B9600
 
 typedef struct {
